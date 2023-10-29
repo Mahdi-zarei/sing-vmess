@@ -28,12 +28,6 @@ func HandleMuxConnection(ctx context.Context, conn net.Conn, handler Handler) er
 		streams:      make(map[uint16]*serverStream),
 		writer:       std_bufio.NewWriter(conn),
 	}
-	if ctx.Done() != nil {
-		go func() {
-			<-ctx.Done()
-			session.cleanup(ctx.Err())
-		}()
-	}
 	return session.recvLoop()
 }
 
@@ -56,13 +50,27 @@ type serverStream struct {
 }
 
 func (c *serverSession) recvLoop() error {
-	for {
-		err := c.recv()
-		if err != nil {
-			c.cleanup(err)
-			return E.Cause(err, "mux connection closed")
+	doneChan := make(chan struct{})
+	var err error
+	defer c.cleanup(err)
+
+	go func() {
+		for {
+			err = c.recv()
+			if err != nil {
+				close(doneChan)
+				return
+			}
 		}
+	}()
+
+	select {
+	case <-c.ctx.Done():
+		err = c.ctx.Err()
+	case <-doneChan:
 	}
+
+	return err
 }
 
 func (c *serverSession) cleanup(err error) {
